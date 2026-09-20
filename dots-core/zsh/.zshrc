@@ -98,6 +98,3 @@ function y() {
 function v() {
   nvim "$@"
 }
-
-# To customize prompt, run `p10k configure` or edit ~/inabashell/zsh/.p10k.zsh.
-[[ ! -f ~/inabashell/zsh/.p10k.zsh ]] || source ~/inabashell/zsh/.p10k.zsh

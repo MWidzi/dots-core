@@ -1,105 +1,211 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# ==============================================================================
+# DYNAMIC MULTI-RICE SWITCHER ENGINE
+# Location: ~/dotfiles/dots-core/switcher/switch.sh
+# Usage:
+#   switch.sh inabashell
+#   switch.sh miku-teto
+#   switch.sh everforest-dots
+# ==============================================================================
+set -euo pipefail
 
-rice_path="$1"
+TARGET_INPUT="${1:-}"
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/dotfiles}"
+CORE_DIR="$DOTFILES_DIR/dots-core"
+RICES_DIR="$DOTFILES_DIR/rices"
+CONFIG_BASE="$HOME/.config"
+STATE_DIR="$CONFIG_BASE/rice"
 
-# 1. Kill services from current rice
-current_programs_file="${2:-$HOME/.config/scripts/rice_switcher/programs.json}"
+if [ -z "$TARGET_INPUT" ]; then
+    echo "Usage: $0 <rice_name_or_path>"
+    echo "Available rices in $RICES_DIR:"
+    find "$RICES_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | sed 's/^/  - /'
+    exit 1
+fi
 
-if [ -f "$current_programs_file" ]; then
-    echo "Stopping running services..."
+# Resolve target directory whether given as a name or a path
+if [ -d "$RICES_DIR/$TARGET_INPUT" ]; then
+    TARGET_RICE_DIR="$RICES_DIR/$TARGET_INPUT"
+    RICE_NAME="$TARGET_INPUT"
+elif [ -d "$TARGET_INPUT" ]; then
+    TARGET_RICE_DIR="$(realpath "$TARGET_INPUT")"
+    RICE_NAME="$(basename "$TARGET_RICE_DIR")"
+elif [ -d "$HOME/$TARGET_INPUT" ]; then
+    TARGET_RICE_DIR="$HOME/$TARGET_INPUT"
+    RICE_NAME="$TARGET_INPUT"
+else
+    echo "Error: Rice directory not found for '$TARGET_INPUT' in $RICES_DIR"
+    exit 1
+fi
 
-    mapfile -t services < <(jq -r '.services[]?' "$current_programs_file" 2>/dev/null)
+mkdir -p "$STATE_DIR"
+OLD_RICE=""
+if [ -f "$STATE_DIR/current" ]; then
+    OLD_RICE="$(cat "$STATE_DIR/current")"
+fi
 
-    for item in "${services[@]}"; do
+echo "==> Switching rice from '${OLD_RICE:-none}' to '$RICE_NAME'..."
+
+# ------------------------------------------------------------------------------
+# 1. Terminate services exclusive to the previous rice
+# ------------------------------------------------------------------------------
+if [ -n "$OLD_RICE" ] && [ -f "$RICES_DIR/$OLD_RICE/manifest.json" ]; then
+    echo "Stopping previous rice services..."
+    mapfile -t old_services < <(jq -r '.services[]?' "$RICES_DIR/$OLD_RICE/manifest.json" 2>/dev/null || true)
+    for item in "${old_services[@]}"; do
         bin="${item%% *}"
-        echo "killing $bin..."
-        pkill -x "$bin" 2>/dev/null || true
+        [ -n "$bin" ] && pkill -x "$bin" 2>/dev/null || true
     done
 fi
 
-# 2. Map all directories in the rice
-mapfile -t dirs < <(find "$rice_path" -mindepth 1 -maxdepth 1 -type d)
+# ------------------------------------------------------------------------------
+# 2. Update Global Rice State
+# ------------------------------------------------------------------------------
+echo "$RICE_NAME" > "$STATE_DIR/current"
+echo "$TARGET_RICE_DIR" > "$STATE_DIR/current_path"
+ln -sfn "$TARGET_RICE_DIR" "$STATE_DIR/active"
 
-config_base="$HOME/.config"
+# ------------------------------------------------------------------------------
+# 3. Dynamic Whole-Folder Per-Rice Linking
+# Any folder in the rice that is NOT managed by dots-core gets linked as a whole.
+# Stale whole-folder symlinks pointing to old rices are automatically removed.
+# ------------------------------------------------------------------------------
+echo "Updating visual components..."
 
-# 3. Symlink standard configs (safely overwriting old ones)
-for dir in "${dirs[@]}"; do
-  basename_dir=$(basename "$dir")
-  
-  # Skip non-config folders
-  if [[ ! "$basename_dir" =~ ^(vesktop|firefox|screenshots|\.git)$ ]]; then
-    target="$config_base/$basename_dir"
-    ln -sfn "$dir" "$target"
-  fi
+# Clean up stale whole-folder symlinks pointing to previous rices
+for link in "$CONFIG_BASE"/*; do
+    if [ -L "$link" ]; then
+        dest=$(readlink "$link" || true)
+        if [[ "$dest" == "$RICES_DIR"/* ]]; then
+            app=$(basename "$link")
+            if [ ! -d "$TARGET_RICE_DIR/$app" ]; then
+                rm "$link"
+            fi
+        fi
+    fi
 done
 
-# 4. Handle Firefox seamlessly
-echo "Linking Firefox config..."
-# Parse profiles.ini to find the default profile path
-PROFILE_DIR=$(awk -F '=' '/^\[Profile/ {in_profile=1} in_profile && /^Path=/ {path=$2} in_profile && /^Default=1/ {print path; exit}' ~/.mozilla/firefox/profiles.ini)
+# Dynamically link whole-folder components present in the new rice
+for dir_path in "$TARGET_RICE_DIR"/*/; do
+    [ -d "$dir_path" ] || continue
+    app=$(basename "$dir_path")
 
-# Fallback just in case Default=1 is missing
-if [ -z "$PROFILE_DIR" ]; then
-    PROFILE_DIR=$(awk -F '=' '/^\[Profile/ {in_profile=1} in_profile && /^Path=/ {path=$2; print path; exit}' ~/.mozilla/firefox/profiles.ini)
+    # Skip core-managed apps and special directories (handled separately)
+    [ -d "$CORE_DIR/$app" ] && continue
+    [[ "$app" =~ ^(firefox|screenshots|\.git)$ ]] && continue
+
+    ln -sfn "$dir_path" "$CONFIG_BASE/$app"
+done
+
+# ------------------------------------------------------------------------------
+# 4. Hybrid Subdirectory Themes (btop, rmpc, vesktop)
+# For apps with a themes/ subfolder, populate ~/.config/<app>/themes/
+# ------------------------------------------------------------------------------
+for app in btop rmpc vesktop; do
+    if [ -d "$TARGET_RICE_DIR/$app/themes" ]; then
+        mkdir -p "$CONFIG_BASE/$app/themes"
+        find "$CONFIG_BASE/$app/themes" -maxdepth 1 -type l -delete
+        for theme_file in "$TARGET_RICE_DIR/$app/themes"/*; do
+            [ -e "$theme_file" ] || continue
+            ln -sfn "$theme_file" "$CONFIG_BASE/$app/themes/$(basename "$theme_file")"
+        done
+    fi
+done
+
+# ------------------------------------------------------------------------------
+# 5. Single-File Theme Injections into Hybrid Configs
+# Injects individual theme files into existing ~/.config/<app>/ directories
+# ------------------------------------------------------------------------------
+declare -A THEME_FILES=(
+    ["kitty/theme.conf"]="kitty/theme.conf"
+    ["yazi/theme.toml"]="yazi/theme.toml"
+    ["nvim/palette.lua"]="nvim/lua/config/themes/palette.lua"
+    ["hypr/hyprlock.conf"]="hypr/hyprlock.conf"
+    ["colors.css"]="colors.css"
+)
+
+for src in "${!THEME_FILES[@]}"; do
+    dest="${THEME_FILES[$src]}"
+    target_dest="$CONFIG_BASE/$dest"
+    if [ -f "$TARGET_RICE_DIR/$src" ]; then
+        mkdir -p "$(dirname "$target_dest")"
+        ln -sfn "$TARGET_RICE_DIR/$src" "$target_dest"
+    elif [ -L "$target_dest" ]; then
+        rm "$target_dest"
+    fi
+done
+
+# ------------------------------------------------------------------------------
+# 6. Zsh Theme & Prompt Injections
+# Links all theme and prompt configurations present in rice/zsh/ into ~/.config/zsh/
+# ------------------------------------------------------------------------------
+if [ -d "$TARGET_RICE_DIR/zsh" ]; then
+    mkdir -p "$CONFIG_BASE/zsh"
+    for zsh_file in "$TARGET_RICE_DIR/zsh"/* "$TARGET_RICE_DIR/zsh"/.[!.]*; do
+        [ -e "$zsh_file" ] || continue
+        ln -sfn "$zsh_file" "$CONFIG_BASE/zsh/$(basename "$zsh_file")"
+    done
 fi
 
-if [ -n "$PROFILE_DIR" ]; then
-    TARGET_CHROME="$HOME/.mozilla/firefox/$PROFILE_DIR/chrome"
-    
-    mkdir -p "$TARGET_CHROME"
-    
-    ln -sfn "$rice_path/firefox/config.css" "$TARGET_CHROME/config.css"
-    echo "Successfully linked Firefox config to $PROFILE_DIR"
-else
-    echo "Could not find a default Firefox profile."
-fi
+# ------------------------------------------------------------------------------
+# 7. Unique Program Handlers (Firefox & Spicetify)
+# ------------------------------------------------------------------------------
+# Firefox: Textfox userChrome CSS & Pywalfox mock cache
+if [ -f "$HOME/.mozilla/firefox/profiles.ini" ] && [ -f "$TARGET_RICE_DIR/firefox/config.css" ]; then
+    profile_dir=$(awk -F '=' '/^\[Profile/ {in_profile=1} in_profile && /^Path=/ {path=$2} in_profile && /^Default=1/ {print path; exit}' "$HOME/.mozilla/firefox/profiles.ini" || true)
+    [ -z "$profile_dir" ] && profile_dir=$(awk -F '=' '/^\[Profile/ {in_profile=1} in_profile && /^Path=/ {path=$2; print path; exit}' "$HOME/.mozilla/firefox/profiles.ini" || true)
 
-# 5. Inject Pywalfox mock colors
-echo "Applying Firefox Theme via Pywalfox..."
-mkdir -p "$HOME/.cache/wal"
-if [ -f "$rice_path/firefox/pywalfox_colors.json" ]; then
-    cp "$rice_path/firefox/pywalfox_colors.json" "$HOME/.cache/wal/colors.json"
-    if command -v pywalfox >/dev/null 2>&1; then
-        pywalfox update
-        echo "Firefox theme updated via pywalfox!"
-    else
-        echo "pywalfox CLI not found. Please install: pip install pywalfox"
+    if [ -n "$profile_dir" ]; then
+        target_chrome="$HOME/.mozilla/firefox/$profile_dir/chrome"
+        mkdir -p "$target_chrome"
+        ln -sfn "$TARGET_RICE_DIR/firefox/config.css" "$target_chrome/config.css"
     fi
 fi
 
-# 6. Link vesktop themes
-echo "Linking Vesktop themes..."
+if [ -f "$TARGET_RICE_DIR/firefox/pywalfox_colors.json" ]; then
+    mkdir -p "$HOME/.cache/wal"
+    cp "$TARGET_RICE_DIR/firefox/pywalfox_colors.json" "$HOME/.cache/wal/colors.json"
+    command -v pywalfox >/dev/null 2>&1 && pywalfox update || true
+fi
 
-vesktop_theme_dir="$rice_path/vesktop/themes"
+# Spicetify: Trigger theme apply if installed
+if [ -d "$TARGET_RICE_DIR/spicetify" ] && command -v spicetify >/dev/null 2>&1; then
+    echo "Applying Spicetify..."
+    spicetify apply 2>/dev/null || true
+fi
 
-mkdir -p "$config_base/vesktop/themes"
+# ------------------------------------------------------------------------------
+# 8. Hyprland Hot-Reload (Lua Engine reads ~/.config/rice/current dynamically)
+# ------------------------------------------------------------------------------
+echo "Reloading Hyprland..."
+hyprctl reload || true
 
-find "$config_base/vesktop/themes" -maxdepth 1 -type l -delete
-
-for theme in "$vesktop_theme_dir"/*; do
-    [ -e "$theme" ] || continue
-    ln -sfn "$theme" "$config_base/vesktop/themes/$(basename "$theme")"
-done
-echo "Successfully linked Vesktop themes from $vesktop_theme_dir"
-
-# 7. Open programs from current rice
-new_programs_file="${2:-$HOME/.config/scripts/rice_switcher/programs.json}"
-
-if [ -f "$new_programs_file" ]; then
-    mapfile -t new_services < <(jq -r '.services[]?' "$new_programs_file" 2>/dev/null)
-
-    for cmd in "${new_services[@]}"; do
-        echo "Starting service: $cmd"
-        eval "$cmd" &
+# ------------------------------------------------------------------------------
+# 9. Launch New Rice Manifest Commands & Background Services
+# ------------------------------------------------------------------------------
+if [ -f "$TARGET_RICE_DIR/manifest.json" ]; then
+    mapfile -t one_times < <(jq -r '.one_time[]?' "$TARGET_RICE_DIR/manifest.json" 2>/dev/null || true)
+    for cmd in "${one_times[@]}"; do
+        echo "Executing: $cmd"
+        eval "$cmd" || true
     done
 
-    mapfile -t one_times < <(jq -r '.one_time[]? // .["one_time"][]?' "$new_programs_file" 2>/dev/null)
-
-    for cmd in "${one_times[@]}"; do
-        echo "Running: $cmd"
-        eval "$cmd"
+    mapfile -t new_services < <(jq -r '.services[]?' "$TARGET_RICE_DIR/manifest.json" 2>/dev/null || true)
+    for cmd in "${new_services[@]}"; do
+        echo "Spawning service: $cmd"
+        eval "$cmd" &
     done
 fi
 
-# 8. Reload the environment
-hyprctl reload
+# ------------------------------------------------------------------------------
+# 10. Hot-Reload Open Applications
+# ------------------------------------------------------------------------------
+pkill -SIGUSR1 -u "$USER" kitty 2>/dev/null || true
+pkill -USR2 cava 2>/dev/null || true
+
+if command -v swaync-client >/dev/null 2>&1; then
+    swaync-client -R 2>/dev/null || true
+    swaync-client -rs 2>/dev/null || true
+fi
+
+echo "==> Successfully switched to '$RICE_NAME'!"
