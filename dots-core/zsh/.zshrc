@@ -87,14 +87,57 @@ source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zs
 
 function y() {
   local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
-  yazi "$@" --cwd-file="$tmp"
+  while true; do
+    yazi "$@" --cwd-file="$tmp"
+    local ret=$?
+    # Exit code 138 (128 + 10 = SIGUSR1) indicates hot-reload triggered by rice switcher
+    if [[ $ret -eq 138 ]]; then
+      continue
+    fi
+    break
+  done
 
   if cwd="$(command cat -- "$tmp")" && [ -n "$cwd" ] && [ "$cwd" != "$PWD" ]; then
     builtin cd -- "$cwd"
   fi
   rm -f -- "$tmp"
 }
+alias yazi='y'
 
 function v() {
   nvim "$@"
 }
+
+# Safe theme & prompt auto-reload when switching rices
+_reload_rice_theme() {
+  if [[ -f ~/.config/zsh/theme.zsh ]]; then
+    # Force global scope evaluation so typeset in any rice never shadows locally
+    eval "$(< ~/.config/zsh/theme.zsh | sed 's/typeset -A/typeset -gA/')"
+  fi
+  [[ -f ~/.config/zsh/.p10k.zsh ]] && source ~/.config/zsh/.p10k.zsh
+  (( $+functions[p10k] )) && p10k reload 2>/dev/null
+  if zle; then
+    (( $+functions[_zsh_highlight] )) && _zsh_highlight 2>/dev/null
+    zle reset-prompt 2>/dev/null
+  fi
+  return 0
+}
+
+_check_rice_theme() {
+  local rice_file="$HOME/.config/rice/current"
+  if [[ -f "$rice_file" ]]; then
+    local current_rice
+    read -r current_rice < "$rice_file"
+    if [[ -n "$__LAST_LOADED_RICE" && "$current_rice" != "$__LAST_LOADED_RICE" ]]; then
+      _reload_rice_theme
+    fi
+    __LAST_LOADED_RICE="$current_rice"
+  fi
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _check_rice_theme
+
+TRAPUSR1() {
+  _reload_rice_theme
+}
+

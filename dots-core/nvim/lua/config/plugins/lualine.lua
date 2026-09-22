@@ -5,38 +5,7 @@ return {
         require('lualine').setup {
             options = {
                 icons_enabled = true,
-                theme = {
-                    normal = {
-                        a = { fg = '#454545', bg = '#e1e1e1', gui = 'bold' },
-                        b = { fg = '#e1e1e1', bg = '#454545' },
-                        c = { fg = '#c7c7c7', bg = nvim_bg },
-                    },
-                    visual = {
-                        a = { fg = '#E95274', bg = '#454545', gui = 'bold' },
-                        b = { fg = '#e1e1e1', bg = '#454545' },
-                        c = { fg = '#c7c7c7', bg = nvim_bg },
-                    },
-                    insert = {
-                        a = { fg = '#C4C9FC', bg = '#454545', gui = 'bold' },
-                        b = { fg = '#e1e1e1', bg = '#454545' },
-                        c = { fg = '#c7c7c7', bg = nvim_bg },
-                    },
-                    replace = {
-                        a = { fg = '#F5959F', bg = '#454545', gui = 'bold' },
-                        b = { fg = '#e1e1e1', bg = '#454545' },
-                        c = { fg = '#c7c7c7', bg = nvim_bg },
-                    },
-                    command = {
-                        a = { fg = '#F4D177', bg = '#454545', gui = 'bold' },
-                        b = { fg = '#e1e1e1', bg = '#454545' },
-                        c = { fg = '#c7c7c7', bg = nvim_bg },
-                    },
-                    inactive = {
-                        a = { fg = '#000000', bg = '#454545', gui = 'bold' },
-                        b = { fg = '#e1e1e1', bg = '#454545' },
-                        c = { fg = '#c7c7c7', bg = nvim_bg },
-                    },
-                },
+                theme = _G.lualine_theme or 'auto',
                 component_separators = '',
                 section_separators = { left = '', right = '' },
                 disabled_filetypes = {

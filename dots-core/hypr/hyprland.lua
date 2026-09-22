@@ -30,6 +30,13 @@ require("env_vars")     -- Environment variables & cursors
 require("rules")        -- Window & layer rules
 
 -- 4. Load Active Rice Theme & Variables (from rices/<current_rice>/hypr/)
+package.loaded["colors"] = nil
+package.loaded["visuals"] = nil
+package.loaded["animations"] = nil
+package.loaded["programs"] = nil
+package.loaded["wallpapers"] = nil
+package.loaded["autostart"] = nil
+
 pcall(require, "colors")       -- Rice palette variables
 pcall(require, "visuals")      -- Layout (master vs scrolling), gaps, borders, blur
 pcall(require, "animations")   -- Rice-specific bezier curves and animation speeds

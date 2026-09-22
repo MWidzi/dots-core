@@ -92,7 +92,7 @@ for dir_path in "$TARGET_RICE_DIR"/*/; do
 
     # Skip core-managed apps and special directories (handled separately)
     [ -d "$CORE_DIR/$app" ] && continue
-    [[ "$app" =~ ^(firefox|screenshots|\.git)$ ]] && continue
+    [[ "$app" =~ ^(firefox|screenshots|\.git|spicetify)$ ]] && continue
 
     ln -sfn "$dir_path" "$CONFIG_BASE/$app"
 done
@@ -113,14 +113,40 @@ for app in btop rmpc vesktop; do
 done
 
 # ------------------------------------------------------------------------------
-# 5. Single-File Theme Injections into Hybrid Configs
+# 5. Hyprland Rice Injections
+# Links all rice-specific Hyprland configurations into ~/.config/hypr/
+# ------------------------------------------------------------------------------
+if [ -d "$CONFIG_BASE/hypr" ]; then
+    # Clean up stale rice-specific symlinks in ~/.config/hypr pointing to other rices
+    for link in "$CONFIG_BASE/hypr"/*; do
+        if [ -L "$link" ]; then
+            dest=$(readlink "$link" || true)
+            if [[ "$dest" == "$RICES_DIR"/* ]]; then
+                file=$(basename "$link")
+                if [ ! -e "$TARGET_RICE_DIR/hypr/$file" ]; then
+                    rm "$link"
+                fi
+            fi
+        fi
+    done
+fi
+
+if [ -d "$TARGET_RICE_DIR/hypr" ]; then
+    mkdir -p "$CONFIG_BASE/hypr"
+    for hypr_file in "$TARGET_RICE_DIR/hypr"/*; do
+        [ -e "$hypr_file" ] || continue
+        ln -sfn "$hypr_file" "$CONFIG_BASE/hypr/$(basename "$hypr_file")"
+    done
+fi
+
+# ------------------------------------------------------------------------------
+# 6. Single-File Theme Injections into Hybrid Configs
 # Injects individual theme files into existing ~/.config/<app>/ directories
 # ------------------------------------------------------------------------------
 declare -A THEME_FILES=(
     ["kitty/theme.conf"]="kitty/theme.conf"
     ["yazi/theme.toml"]="yazi/theme.toml"
     ["nvim/palette.lua"]="nvim/lua/config/themes/palette.lua"
-    ["hypr/hyprlock.conf"]="hypr/hyprlock.conf"
     ["colors.css"]="colors.css"
 )
 
@@ -136,7 +162,7 @@ for src in "${!THEME_FILES[@]}"; do
 done
 
 # ------------------------------------------------------------------------------
-# 6. Zsh Theme & Prompt Injections
+# 7. Zsh Theme & Prompt Injections
 # Links all theme and prompt configurations present in rice/zsh/ into ~/.config/zsh/
 # ------------------------------------------------------------------------------
 if [ -d "$TARGET_RICE_DIR/zsh" ]; then
@@ -147,31 +173,82 @@ if [ -d "$TARGET_RICE_DIR/zsh" ]; then
     done
 fi
 
+# Helper for launching apps on specific workspaces in Hyprland (supports both Lua & legacy syntax)
+hypr_exec() {
+    local cmd="$1"
+    local ws="${2:-}"
+    if [ -n "$ws" ]; then
+        hyprctl dispatch "hl.dsp.exec_cmd(\"[workspace $ws silent] $cmd\")" >/dev/null 2>&1 || \
+        hyprctl dispatch exec "[workspace $ws silent] $cmd" >/dev/null 2>&1 || \
+        gtk-launch "$cmd" >/dev/null 2>&1 || \
+        nohup $cmd >/dev/null 2>&1 &
+    else
+        hyprctl dispatch "hl.dsp.exec_cmd(\"$cmd\")" >/dev/null 2>&1 || \
+        hyprctl dispatch exec "$cmd" >/dev/null 2>&1 || \
+        gtk-launch "$cmd" >/dev/null 2>&1 || \
+        nohup $cmd >/dev/null 2>&1 &
+    fi
+}
+
 # ------------------------------------------------------------------------------
-# 7. Unique Program Handlers (Firefox & Spicetify)
+# 8. Unique Program Handlers (Firefox & Spicetify)
 # ------------------------------------------------------------------------------
 # Firefox: Textfox userChrome CSS & Pywalfox mock cache
-if [ -f "$HOME/.mozilla/firefox/profiles.ini" ] && [ -f "$TARGET_RICE_DIR/firefox/config.css" ]; then
-    profile_dir=$(awk -F '=' '/^\[Profile/ {in_profile=1} in_profile && /^Path=/ {path=$2} in_profile && /^Default=1/ {print path; exit}' "$HOME/.mozilla/firefox/profiles.ini" || true)
-    [ -z "$profile_dir" ] && profile_dir=$(awk -F '=' '/^\[Profile/ {in_profile=1} in_profile && /^Path=/ {path=$2; print path; exit}' "$HOME/.mozilla/firefox/profiles.ini" || true)
-
-    if [ -n "$profile_dir" ]; then
-        target_chrome="$HOME/.mozilla/firefox/$profile_dir/chrome"
-        mkdir -p "$target_chrome"
-        ln -sfn "$TARGET_RICE_DIR/firefox/config.css" "$target_chrome/config.css"
-    fi
+if [ -f "$TARGET_RICE_DIR/firefox/config.css" ]; then
+    for profile_dir in "$HOME/.mozilla/firefox"/*/; do
+        if [ -d "$profile_dir/chrome" ] || [ -f "$profile_dir/prefs.js" ]; then
+            mkdir -p "$profile_dir/chrome"
+            ln -sfn "$TARGET_RICE_DIR/firefox/config.css" "$profile_dir/chrome/config.css"
+        fi
+    done
 fi
 
 if [ -f "$TARGET_RICE_DIR/firefox/pywalfox_colors.json" ]; then
     mkdir -p "$HOME/.cache/wal"
     cp "$TARGET_RICE_DIR/firefox/pywalfox_colors.json" "$HOME/.cache/wal/colors.json"
-    command -v pywalfox >/dev/null 2>&1 && pywalfox update || true
+    command -v pywalfox >/dev/null 2>&1 && pywalfox update 2>/dev/null || true
 fi
 
-# Spicetify: Trigger theme apply if installed
+# Hot-restart Firefox to apply Textfox userChrome CSS while preserving workspace and session
+if pgrep -x firefox >/dev/null 2>&1; then
+    echo "Reloading Firefox with updated theme..."
+    ff_ws=$(hyprctl clients -j 2>/dev/null | jq -r '[.[] | select(.class == "firefox" or .initialClass == "firefox")][0].workspace.id // empty' 2>/dev/null || true)
+    pkill -TERM -x firefox 2>/dev/null || true
+    for _ in {1..40}; do
+        pgrep -x firefox >/dev/null 2>&1 || break
+        sleep 0.1
+    done
+    sleep 0.3
+    hypr_exec "firefox" "$ff_ws"
+fi
+
+# Spicetify: Link theme files and apply
 if [ -d "$TARGET_RICE_DIR/spicetify" ] && command -v spicetify >/dev/null 2>&1; then
     echo "Applying Spicetify..."
-    spicetify apply 2>/dev/null || true
+    if [ -d "$TARGET_RICE_DIR/spicetify/Themes" ]; then
+        mkdir -p "$CONFIG_BASE/spicetify/Themes"
+        for theme_dir in "$TARGET_RICE_DIR/spicetify/Themes"/*; do
+            [ -d "$theme_dir" ] || continue
+            theme_name=$(basename "$theme_dir")
+            rm -rf "$CONFIG_BASE/spicetify/Themes/$theme_name"
+            ln -sfn "$theme_dir" "$CONFIG_BASE/spicetify/Themes/$theme_name"
+        done
+    fi
+
+
+    # Hot-reload if Spotify is currently running, or apply without launching if closed
+    if pgrep -x spotify >/dev/null 2>&1; then
+        sp_ws=$(hyprctl clients -j 2>/dev/null | jq -r '[.[] | select(.class == "Spotify" or .class == "spotify" or .initialClass == "Spotify")][0].workspace.id // empty' 2>/dev/null || true)
+        pkill -x spotify 2>/dev/null || true
+        for _ in {1..20}; do
+            pgrep -x spotify >/dev/null 2>&1 || break
+            sleep 0.1
+        done
+        spicetify apply -n 2>/dev/null || true
+        hypr_exec "spotify" "$sp_ws"
+    else
+        spicetify apply -n 2>/dev/null || true
+    fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -187,13 +264,13 @@ if [ -f "$TARGET_RICE_DIR/manifest.json" ]; then
     mapfile -t one_times < <(jq -r '.one_time[]?' "$TARGET_RICE_DIR/manifest.json" 2>/dev/null || true)
     for cmd in "${one_times[@]}"; do
         echo "Executing: $cmd"
-        eval "$cmd" || true
+        eval "$cmd" >/dev/null 2>&1 || true
     done
 
     mapfile -t new_services < <(jq -r '.services[]?' "$TARGET_RICE_DIR/manifest.json" 2>/dev/null || true)
     for cmd in "${new_services[@]}"; do
         echo "Spawning service: $cmd"
-        eval "$cmd" &
+        eval "$cmd" >/dev/null 2>&1 &
     done
 fi
 
@@ -201,7 +278,20 @@ fi
 # 10. Hot-Reload Open Applications
 # ------------------------------------------------------------------------------
 pkill -SIGUSR1 -u "$USER" kitty 2>/dev/null || true
-pkill -USR2 cava 2>/dev/null || true
+pkill -USR2 -u "$USER" cava 2>/dev/null || true
+pkill -SIGUSR2 -u "$USER" btop 2>/dev/null || true
+pkill -USR1 -u "$USER" yazi 2>/dev/null || true
+
+# Hot-reload running Neovim instances via active RPC sockets
+for sock in /run/user/"$UID"/nvim.*.0; do
+    [ -S "$sock" ] || continue
+    pid=$(basename "$sock" | cut -d. -f2)
+    if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$sock"
+        continue
+    fi
+    nvim --server "$sock" --remote-send '<Cmd>lua local p = dofile(vim.fn.stdpath("config") .. "/lua/config/themes/palette.lua"); if p and p.config then p.config() end; package.loaded["palette.highlights"] = nil; package.loaded["palette.theme"] = nil; package.loaded["palette.colors"] = nil; package.loaded["palette.utils"] = nil; require("palette").load(); if package.loaded["lualine"] then require("lualine").setup({ options = { theme = _G.lualine_theme or "auto" } }) end; vim.cmd("redraw!")<CR>' 2>/dev/null || true
+done
 
 if command -v swaync-client >/dev/null 2>&1; then
     swaync-client -R 2>/dev/null || true
