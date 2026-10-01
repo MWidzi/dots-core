@@ -52,9 +52,37 @@ echo "==> Switching rice from '${OLD_RICE:-none}' to '$RICE_NAME'..."
 if [ -n "$OLD_RICE" ] && [ -f "$RICES_DIR/$OLD_RICE/manifest.json" ]; then
     echo "Stopping previous rice services..."
     mapfile -t old_services < <(jq -r '.services[]?' "$RICES_DIR/$OLD_RICE/manifest.json" 2>/dev/null || true)
+    mapfile -t target_services < <(jq -r '.services[]?' "$TARGET_RICE_DIR/manifest.json" 2>/dev/null || true)
     for item in "${old_services[@]}"; do
         bin="${item%% *}"
-        [ -n "$bin" ] && pkill -x "$bin" 2>/dev/null || true
+        [ -z "$bin" ] && continue
+
+        # Do not kill if the target rice runs the exact same service command
+        # (Exception: UI bars like waybar and qs must be restarted to apply the new rice's config)
+        is_shared=false
+        if [[ "$bin" != "waybar" && "$bin" != "qs" ]]; then
+            for target_item in "${target_services[@]}"; do
+                if [ "$item" = "$target_item" ]; then
+                    is_shared=true
+                    break
+                fi
+            done
+        fi
+
+        if [ "$is_shared" = false ]; then
+            pkill -x "$bin" 2>/dev/null || true
+            if [ "$bin" = "waybar" ]; then
+                pkill -f "waybarCava.sh" 2>/dev/null || true
+                pkill -f "bar_cava_config" 2>/dev/null || true
+            fi
+            for _ in {1..20}; do
+                pgrep -x "$bin" >/dev/null 2>&1 || break
+                sleep 0.05
+            done
+            if pgrep -x "$bin" >/dev/null 2>&1; then
+                pkill -9 -x "$bin" 2>/dev/null || true
+            fi
+        fi
     done
 fi
 
@@ -94,6 +122,13 @@ for dir_path in "$TARGET_RICE_DIR"/*/; do
     [ -d "$CORE_DIR/$app" ] && continue
     [[ "$app" =~ ^(firefox|screenshots|\.git|spicetify)$ ]] && continue
 
+    dir_path="${dir_path%/}"
+
+    # If destination exists as a physical directory (not a symlink), back it up so ln doesn't nest into it
+    if [ -d "$CONFIG_BASE/$app" ] && [ ! -L "$CONFIG_BASE/$app" ]; then
+        mv "$CONFIG_BASE/$app" "$CONFIG_BASE/${app}.bak.$(date +%Y%m%d%H%M%S)"
+    fi
+
     ln -sfn "$dir_path" "$CONFIG_BASE/$app"
 done
 
@@ -101,7 +136,7 @@ done
 # 4. Hybrid Subdirectory Themes (btop, rmpc, vesktop)
 # For apps with a themes/ subfolder, populate ~/.config/<app>/themes/
 # ------------------------------------------------------------------------------
-for app in btop rmpc vesktop; do
+for app in btop rmpc vesktop walker; do
     if [ -d "$TARGET_RICE_DIR/$app/themes" ]; then
         mkdir -p "$CONFIG_BASE/$app/themes"
         find "$CONFIG_BASE/$app/themes" -maxdepth 1 -type l -delete
@@ -146,7 +181,6 @@ fi
 declare -A THEME_FILES=(
     ["kitty/theme.conf"]="kitty/theme.conf"
     ["yazi/theme.toml"]="yazi/theme.toml"
-    ["nvim/palette.lua"]="nvim/lua/config/themes/palette.lua"
     ["colors.css"]="colors.css"
 )
 
@@ -162,6 +196,30 @@ for src in "${!THEME_FILES[@]}"; do
 done
 
 # ------------------------------------------------------------------------------
+# 6b. Neovim Dynamic Theme Injections
+# Links all theme configurations present in rice/nvim/ into ~/.config/nvim/lua/config/themes/
+# ------------------------------------------------------------------------------
+NVIM_THEMES_DEST="$CONFIG_BASE/nvim/lua/config/themes"
+if [ -d "$NVIM_THEMES_DEST" ]; then
+    for link in "$NVIM_THEMES_DEST"/*; do
+        if [ -L "$link" ]; then
+            dest=$(readlink "$link" || true)
+            if [[ "$dest" == "$RICES_DIR"/* ]]; then
+                rm "$link"
+            fi
+        fi
+    done
+fi
+
+if [ -d "$TARGET_RICE_DIR/nvim" ]; then
+    mkdir -p "$NVIM_THEMES_DEST"
+    for theme_file in "$TARGET_RICE_DIR/nvim"/*.lua; do
+        [ -e "$theme_file" ] || continue
+        ln -sfn "$theme_file" "$NVIM_THEMES_DEST/$(basename "$theme_file")"
+    done
+fi
+
+# ------------------------------------------------------------------------------
 # 7. Zsh Theme & Prompt Injections
 # Links all theme and prompt configurations present in rice/zsh/ into ~/.config/zsh/
 # ------------------------------------------------------------------------------
@@ -173,6 +231,10 @@ if [ -d "$TARGET_RICE_DIR/zsh" ]; then
     done
 fi
 
+# Invalidate stale p10k prompt cache so newly spawned shells use new rice prompt
+rm -rf "$CONFIG_BASE/cache"/p10k* 2>/dev/null || true
+rm -rf "$HOME/.cache"/p10k* 2>/dev/null || true
+
 # Helper for launching apps on specific workspaces in Hyprland (supports both Lua & legacy syntax)
 hypr_exec() {
     local cmd="$1"
@@ -181,12 +243,12 @@ hypr_exec() {
         hyprctl dispatch "hl.dsp.exec_cmd(\"[workspace $ws silent] $cmd\")" >/dev/null 2>&1 || \
         hyprctl dispatch exec "[workspace $ws silent] $cmd" >/dev/null 2>&1 || \
         gtk-launch "$cmd" >/dev/null 2>&1 || \
-        nohup $cmd >/dev/null 2>&1 &
+        nohup bash -c "$cmd" >/dev/null 2>&1 &
     else
         hyprctl dispatch "hl.dsp.exec_cmd(\"$cmd\")" >/dev/null 2>&1 || \
         hyprctl dispatch exec "$cmd" >/dev/null 2>&1 || \
         gtk-launch "$cmd" >/dev/null 2>&1 || \
-        nohup $cmd >/dev/null 2>&1 &
+        nohup bash -c "$cmd" >/dev/null 2>&1 &
     fi
 }
 
@@ -232,6 +294,7 @@ if [ -d "$TARGET_RICE_DIR/spicetify" ] && command -v spicetify >/dev/null 2>&1; 
             theme_name=$(basename "$theme_dir")
             rm -rf "$CONFIG_BASE/spicetify/Themes/$theme_name"
             ln -sfn "$theme_dir" "$CONFIG_BASE/spicetify/Themes/$theme_name"
+            spicetify config current_theme "$theme_name" 2>/dev/null || true
         done
     fi
 
@@ -269,8 +332,40 @@ if [ -f "$TARGET_RICE_DIR/manifest.json" ]; then
 
     mapfile -t new_services < <(jq -r '.services[]?' "$TARGET_RICE_DIR/manifest.json" 2>/dev/null || true)
     for cmd in "${new_services[@]}"; do
-        echo "Spawning service: $cmd"
-        eval "$cmd" >/dev/null 2>&1 &
+        bin="${cmd%% *}"
+        [ -z "$bin" ] && continue
+
+        # If elephant is not running, clean up any stale socket before starting
+        if [ "$bin" = "elephant" ] && ! pgrep -x "elephant" >/dev/null 2>&1; then
+            rm -f "/run/user/$UID/elephant/elephant.sock" 2>/dev/null || true
+        fi
+
+        # If a UI bar service like waybar or qs is somehow still running, ensure it is terminated before spawning
+        if [[ "$bin" == "waybar" || "$bin" == "qs" ]] && pgrep -x "$bin" >/dev/null 2>&1; then
+            pkill -x "$bin" 2>/dev/null || true
+            if [ "$bin" = "waybar" ]; then
+                pkill -f "waybarCava.sh" 2>/dev/null || true
+                pkill -f "bar_cava_config" 2>/dev/null || true
+            fi
+            for _ in {1..20}; do
+                pgrep -x "$bin" >/dev/null 2>&1 || break
+                sleep 0.05
+            done
+            if pgrep -x "$bin" >/dev/null 2>&1; then
+                pkill -9 -x "$bin" 2>/dev/null || true
+            fi
+        fi
+
+        if ! pgrep -x "$bin" >/dev/null 2>&1; then
+            echo "Spawning service: $cmd"
+            hypr_exec "$cmd"
+            if [ "$bin" = "elephant" ]; then
+                # Give elephant a brief moment to initialize its socket before dependent frontends start
+                sleep 0.2
+            fi
+        else
+            echo "Service already running: $cmd"
+        fi
     done
 fi
 
@@ -282,6 +377,45 @@ pkill -USR2 -u "$USER" cava 2>/dev/null || true
 pkill -SIGUSR2 -u "$USER" btop 2>/dev/null || true
 pkill -USR1 -u "$USER" yazi 2>/dev/null || true
 
+# Hot-reload running interactive Zsh shells
+ancestor_pids=" $$ $PPID "
+curr=$PPID
+while [ "$curr" -gt 1 ] 2>/dev/null; do
+    curr_stat=$(cat "/proc/$curr/stat" 2>/dev/null || true)
+    [ -z "$curr_stat" ] && break
+    rest="${curr_stat##*) }"
+    read -r _state curr_ppid _ <<< "$rest"
+    [ -z "$curr_ppid" ] && break
+    ancestor_pids="$ancestor_pids $curr_ppid "
+    curr="$curr_ppid"
+done
+
+my_tty=$(tty 2>/dev/null || true)
+[ "$my_tty" = "not a tty" ] && my_tty=""
+
+for pid in $(pgrep -u "$USER" -x zsh 2>/dev/null || true); do
+    [[ "$ancestor_pids" =~ " $pid " ]] && continue
+    fd0=$(readlink "/proc/$pid/fd/0" 2>/dev/null || true)
+    [[ "$fd0" != /dev/pts/* ]] && continue
+    [ -n "$my_tty" ] && [ "$fd0" = "$my_tty" ] && continue
+
+    if [ -f "/proc/$pid/stat" ]; then
+        stat_content=$(cat "/proc/$pid/stat" 2>/dev/null || true)
+        rest="${stat_content##*) }"
+        read -r _state _ppid pgrp sid _tty_nr tpgid _ <<< "$rest"
+        if [ "$pid" = "$pgrp" ]; then
+            if [ "$pgrp" = "$tpgid" ]; then
+                # Shell is idle at the prompt: SIGINT simulates Ctrl+C, triggering precmd & instant redraw
+                kill -INT "$pid" 2>/dev/null || true
+            else
+                # Shell is running a foreground process (e.g. nvim, btop):
+                # Send SIGUSR1 so it can reload safely without aborting the foreground process
+                kill -USR1 "$pid" 2>/dev/null || true
+            fi
+        fi
+    fi
+done
+
 # Hot-reload running Neovim instances via active RPC sockets
 for sock in /run/user/"$UID"/nvim.*.0; do
     [ -S "$sock" ] || continue
@@ -290,12 +424,17 @@ for sock in /run/user/"$UID"/nvim.*.0; do
         rm -f "$sock"
         continue
     fi
-    nvim --server "$sock" --remote-send '<Cmd>lua local p = dofile(vim.fn.stdpath("config") .. "/lua/config/themes/palette.lua"); if p and p.config then p.config() end; package.loaded["palette.highlights"] = nil; package.loaded["palette.theme"] = nil; package.loaded["palette.colors"] = nil; package.loaded["palette.utils"] = nil; require("palette").load(); if package.loaded["lualine"] then require("lualine").setup({ options = { theme = _G.lualine_theme or "auto" } }) end; vim.cmd("redraw!")<CR>' 2>/dev/null || true
+    nvim --headless --server "$sock" --remote-expr 'luaeval("pcall(function() package.loaded[\"config.theme_manager\"] = nil; require(\"config.theme_manager\").apply_theme() end)")' >/dev/null 2>&1 || \
+    nvim --headless --server "$sock" --remote-send '<Cmd>lua pcall(function() package.loaded["config.theme_manager"] = nil; require("config.theme_manager").apply_theme() end)<CR>' >/dev/null 2>&1 || true
 done
 
-if command -v swaync-client >/dev/null 2>&1; then
+if pgrep -x swaync >/dev/null 2>&1 && command -v swaync-client >/dev/null 2>&1; then
     swaync-client -R 2>/dev/null || true
     swaync-client -rs 2>/dev/null || true
+fi
+
+if pgrep -x mako >/dev/null 2>&1 && command -v makoctl >/dev/null 2>&1; then
+    makoctl reload 2>/dev/null || true
 fi
 
 echo "==> Successfully switched to '$RICE_NAME'!"
