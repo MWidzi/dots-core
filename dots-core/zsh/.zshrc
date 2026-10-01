@@ -86,21 +86,36 @@ bindkey '^L' autosuggest-accept
 source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 
 function y() {
-  local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
+  local tmp="$(mktemp -t "yazi-cwd.XXXXXX")"
+  local live_tmp="$(mktemp -t "yazi-live-cwd.XXXXXX")"
+  local cwd target_entry
   while true; do
-    yazi "$@" --cwd-file="$tmp"
+    if [[ -n "$target_entry" ]]; then
+      YAZI_LIVE_CWD_FILE="$live_tmp" yazi "$target_entry" --cwd-file="$tmp"
+    else
+      YAZI_LIVE_CWD_FILE="$live_tmp" yazi "$@" --cwd-file="$tmp"
+    fi
     local ret=$?
     # Exit code 138 (128 + 10 = SIGUSR1) indicates hot-reload triggered by rice switcher
     if [[ $ret -eq 138 ]]; then
+      if [[ -f "$live_tmp" ]]; then
+        local last_cwd
+        last_cwd="$(command cat -- "$live_tmp" 2>/dev/null || true)"
+        if [[ -n "$last_cwd" && -d "$last_cwd" ]]; then
+          target_entry="$last_cwd"
+        fi
+      fi
       continue
     fi
     break
   done
 
-  if cwd="$(command cat -- "$tmp")" && [ -n "$cwd" ] && [ "$cwd" != "$PWD" ]; then
+  if cwd="$(command cat -- "$tmp" 2>/dev/null)" && [ -n "$cwd" ] && [ "$cwd" != "$PWD" ]; then
+    builtin cd -- "$cwd"
+  elif [[ -f "$live_tmp" ]] && cwd="$(command cat -- "$live_tmp" 2>/dev/null)" && [ -n "$cwd" ] && [ "$cwd" != "$PWD" ]; then
     builtin cd -- "$cwd"
   fi
-  rm -f -- "$tmp"
+  rm -f -- "$tmp" "$live_tmp"
 }
 alias yazi='y'
 
@@ -111,14 +126,19 @@ function v() {
 # Safe theme & prompt auto-reload when switching rices
 _reload_rice_theme() {
   if [[ -f ~/.config/zsh/theme.zsh ]]; then
+    # Reset styles to prevent bleeding between rices
+    unset ZSH_HIGHLIGHT_STYLES
+    typeset -gA ZSH_HIGHLIGHT_STYLES
     # Force global scope evaluation so typeset in any rice never shadows locally
     eval "$(< ~/.config/zsh/theme.zsh | sed 's/typeset -A/typeset -gA/')"
   fi
   [[ -f ~/.config/zsh/.p10k.zsh ]] && source ~/.config/zsh/.p10k.zsh
   (( $+functions[p10k] )) && p10k reload 2>/dev/null
-  if zle; then
-    (( $+functions[_zsh_highlight] )) && _zsh_highlight 2>/dev/null
+  (( $+functions[_p9k_precmd] )) && _p9k_precmd 2>/dev/null
+  if [[ -o zle ]]; then
+    zle -I 2>/dev/null
     zle reset-prompt 2>/dev/null
+    zle -R 2>/dev/null
   fi
   return 0
 }
@@ -134,10 +154,19 @@ _check_rice_theme() {
     __LAST_LOADED_RICE="$current_rice"
   fi
 }
+
+# Pre-populate __LAST_LOADED_RICE at shell startup so precmd knows the active rice
+if [[ -f "$HOME/.config/rice/current" ]]; then
+  read -r __LAST_LOADED_RICE < "$HOME/.config/rice/current"
+fi
+
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd _check_rice_theme
 
 TRAPUSR1() {
   _reload_rice_theme
+  if [[ -o zle ]]; then
+    kill -INT $$ 2>/dev/null
+  fi
 }
 
