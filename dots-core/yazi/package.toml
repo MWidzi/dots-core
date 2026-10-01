@@ -1,10 +1,12 @@
+[plugin]
+deps = []
 
 [[flavor.deps]]
 use = "Chromium-3-Oxide/everforest-medium"
-rev = "0158f0f"
-hash = "a7c36abf0b13289aceb1c20a17c6a63e"
+rev = "e1ead7b"
+hash = "f7dc46200e53da5e94858630184a9220"
 
 [[flavor.deps]]
 use = "yazi-rs/flavors:dracula"
-rev = "4a1802a"
-hash = "7a870f143a4026a893ea3123be711e7a"
+rev = "20b47bf"
+hash = "40136c9a02e166067a36d9ad618887f2"
