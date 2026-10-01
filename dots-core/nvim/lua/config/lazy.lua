@@ -20,3 +20,5 @@ require('lazy').setup({
         icons = {},
     },
 })
+
+require('config.theme_manager').apply_theme()

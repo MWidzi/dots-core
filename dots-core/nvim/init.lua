@@ -3,7 +3,8 @@ vim.g.maplocalleader = ' '
 
 vim.g.have_nerd_font = true
 
-_G.theme = 'palette'
+local theme_mgr = require 'config.theme_manager'
+_G.theme = theme_mgr.get_active_theme()
 
 require 'config.autolayout'
 require 'config.options'

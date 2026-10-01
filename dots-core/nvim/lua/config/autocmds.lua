@@ -17,41 +17,31 @@ vim.api.nvim_create_autocmd('FileType', {
     end,
 })
 
--- Auto-reload palette and lualine when window gains focus if rice changed
+-- Auto-reload theme and lualine when window gains focus if rice or theme changed
 local last_loaded_rice = nil
+local last_loaded_theme = nil
 vim.api.nvim_create_autocmd('FocusGained', {
     desc = 'Reload rice theme when window gains focus',
     callback = function()
+        local theme_mgr = require('config.theme_manager')
         local rice_file = vim.fn.expand('~/.config/rice/current')
         local f = io.open(rice_file, 'r')
+        local current_rice = f and f:read('*l') or nil
         if f then
-            local current_rice = f:read('*l')
             f:close()
-            if current_rice and last_loaded_rice and current_rice ~= last_loaded_rice then
-                last_loaded_rice = current_rice
-                local palette_path = vim.fn.stdpath('config') .. '/lua/config/themes/palette.lua'
-                local ok, p = pcall(dofile, palette_path)
-                if ok and p and p.config then
-                    p.config()
-                end
-                package.loaded['palette.highlights'] = nil
-                package.loaded['palette.theme'] = nil
-                package.loaded['palette.colors'] = nil
-                package.loaded['palette.utils'] = nil
-                pcall(function()
-                    require('palette').load()
-                end)
-                if package.loaded['lualine'] then
-                    require('lualine').setup {
-                        options = {
-                            theme = _G.lualine_theme or 'auto',
-                        },
-                    }
-                end
-                vim.cmd('redraw!')
-            else
-                last_loaded_rice = current_rice
-            end
+        end
+
+        local current_theme = theme_mgr.get_active_theme()
+
+        if (current_rice and last_loaded_rice and current_rice ~= last_loaded_rice)
+            or (current_theme and last_loaded_theme and current_theme ~= last_loaded_theme)
+        then
+            last_loaded_rice = current_rice
+            last_loaded_theme = current_theme
+            theme_mgr.apply_theme(current_theme)
+        else
+            last_loaded_rice = current_rice or last_loaded_rice
+            last_loaded_theme = current_theme or last_loaded_theme
         end
     end,
 })
