@@ -16,12 +16,7 @@ rounding_off=5
 
 if [[ "$current_active_opacity" == "$opacity_on" ]]; then
     # Switch to "off" values
-    hyprctl keyword animations:enabled yes
-    hyprctl keyword decoration:active_opacity $active_opacity_off
-    hyprctl keyword decoration:inactive_opacity $inactive_opacity_off
-    hyprctl keyword general:gaps_in $gaps_in_off
-    hyprctl keyword general:gaps_out $gaps_out_off
-    hyprctl keyword decoration:rounding $rounding_off
+    hyprctl eval "hl.config({ animations = { enabled = true }, decoration = { active_opacity = $active_opacity_off, inactive_opacity = $inactive_opacity_off, rounding = $rounding_off }, general = { gaps_in = $gaps_in_off, gaps_out = '$gaps_out_off' } })"
     pkill waybar
     pkill cava
     cp ~/.config/alt_styles/waybar/normal/config.jsonc ~/.config/waybar/config.jsonc
@@ -29,12 +24,7 @@ if [[ "$current_active_opacity" == "$opacity_on" ]]; then
     waybar
 else
     # Switch to "on" values
-    hyprctl keyword animations:enabled no
-    hyprctl keyword decoration:active_opacity $opacity_on
-    hyprctl keyword decoration:inactive_opacity $opacity_on
-    hyprctl keyword general:gaps_in $gaps_in_on
-    hyprctl keyword general:gaps_out $gaps_out_on
-    hyprctl keyword decoration:rounding $rounding_on
+    hyprctl eval "hl.config({ animations = { enabled = false }, decoration = { active_opacity = $opacity_on, inactive_opacity = $opacity_on, rounding = $rounding_on }, general = { gaps_in = $gaps_in_on, gaps_out = '$gaps_out_on' } })"
     pkill waybar
     pkill cava
     cp ~/.config/alt_styles/waybar/alt/config.jsonc ~/.config/waybar/config.jsonc

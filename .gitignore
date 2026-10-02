@@ -1,3 +1,4 @@
 rices/*
 dots-core/hypr/.luarc.json
 dots-core/nvim/lua/config/themes/
+dots-core/nvim/lazy-lock.json
