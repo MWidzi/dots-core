@@ -22,17 +22,18 @@ setopt AUTO_CD              # Auto cd when entering a directory name.
 export PATH="$PATH:$HOME/.cargo/bin:$HOME/.local/bin"
 
 # git aliases
+alias gs='git status'
+alias ga='git add'
 alias gc='git commit -m'
 alias gpl='git pull'
-alias ga='git add'
 alias gps='git push'
+alias gcl='git clone'
 alias gfps='git push --force-with-lease'
 alias gr='git rebase'
 alias gm='git merge'
-alias gcl='git clone'
 alias gb='git branch -c'
 alias gbd='git branch -D'
-alias gs='git switch'
+alias gbs='git switch'
 
 # other aliases
 alias d='dirs -v'
